@@ -16,7 +16,7 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: Implementation :: CPython",
 ]
-dependencies = []
+dependencies = ["aw-client>=0.5.12", "aw-core>=0.5.15"]
 
 [project.urls]
 Documentation = "https://github.com/Jeremiah-England/aw-daily-reviewer#readme"
@@ -47,7 +47,7 @@ fmt = ["black {args:.}", "ruff --fix {args:.}", "style"]
 all = ["style", "typing"]
 
 [tool.black]
-target-version = ["py37"]
+target-version = ["py311"]
 line-length = 120
 skip-string-normalization = true
 
