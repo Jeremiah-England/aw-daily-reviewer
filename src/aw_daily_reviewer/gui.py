@@ -5,6 +5,8 @@ import tkinter as tk
 from itertools import pairwise
 from tkinter import messagebox, simpledialog, ttk
 
+import aw_core
+
 from aw_daily_reviewer.core import ActivityWatchCleaner
 
 system_timezone = dt.datetime.now().astimezone().tzinfo
@@ -12,6 +14,27 @@ system_timezone = dt.datetime.now().astimezone().tzinfo
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
+
+def event_to_day_pct(event: aw_core.Event) -> float:
+    """Convert an event to the percentage of a day it lasted."""
+    return event.duration.total_seconds() / (60 * 60 * 24)
+
+
+def event_to_day_pct_str(event: aw_core.Event) -> str:
+    """Convert an event to the percentage of a day it lasted."""
+    return f"{event_to_day_pct(event) * 100:.2f}%"
+
+
+def event_to_minutes(event: aw_core.Event) -> int:
+    """Convert an event to the number of minutes it lasted."""
+    return int(event.duration.total_seconds() / 60)
+
+
+def event_to_time_str(event: aw_core.Event) -> str:
+    start = event.timestamp.astimezone(system_timezone)
+    end = start + event.duration
+    return f"{start.strftime('%H:%M')} - {end.strftime('%H:%M')}"
 
 
 class ReviewTable(ttk.Treeview):
@@ -22,18 +45,21 @@ class ReviewTable(ttk.Treeview):
         # TODO: Add sorting by column
         # TODO: Add input for rating the value of an activity.
         # TODO: Add percentage for the percentage of the day spend on the activity.
-        self["columns"] = ("time", "durration", "event")
-        self.column("#0", width=59, stretch=False)
-        self.column("time", width=100, stretch=False)
-        self.column("durration", width=100, stretch=False)
-        self.column("event", minwidth=500, width=500, stretch=False)
+        # self["columns"] = ("time", "durration", "event")
+        self["columns"] = ("minutes", "days", "event")
+        self.event_desc_index = 2
+
+        self.column("#0", width=120, stretch=False)
+        self.column("minutes", width=100, stretch=False, anchor="center")
+        self.column("days", width=100, stretch=False, anchor="center")
+        self.column("event", minwidth=500, width=500, stretch=True)
 
         self.heading("#0", text="")
-        self.heading("time", text="Time")
-        self.heading("durration", text="durration")
+        self.heading("minutes", text="Minutes")
+        self.heading("days", text="Days (%)")
         self.heading("event", text="Event")
 
-        self.insert("", tk.END, text="test", values=("test", "test", "test"))
+        self.insert("", tk.END, text="test", values=("test", "test"))
         self.visual_mode = False
         self.previously_selected = None
         self.old_selection = set()
@@ -42,25 +68,69 @@ class ReviewTable(ttk.Treeview):
         # Add some vim-like keybindings
         self.bind("<Double-g>", lambda _: self.go_to_top())
         self.bind("<G>", lambda _: self.go_to_bottom())
-        # TODO: Add h/l to open/close the selected node.
-        # TODO: Add i for insert/edit mode on a node. Would pop up a dialog to edit the event I think. (Though, inline would be nice.)
+        self.bind("h", lambda _: self.close_selected_node())
+        self.bind("l", lambda _: self.open_selected_node())
+        self.bind("i", lambda _: self.edit_selected_node())
+        # TODO: Fix j and k to go into folds if they are open.
         self.bind("j", lambda _: self.select_next())
         self.bind("k", lambda _: self.select_previous())
         self.bind("v", lambda _: self.enter_visual_mode())
         self.bind("V", lambda _: self.enter_visual_mode())
         self.bind("<Double-z>", lambda _: self.center_selected())
         self.bind("<Double-d>", lambda _: self.remove_selected())
+        self.bind("x", lambda _: self.remove_selected())
         self.bind("<Escape>", lambda _: self.leave_visual_mode())
         self.bind("zf", lambda _: self.group())
 
+    def event_to_values(self, event: aw_core.Event):
+        return (
+            event_to_minutes(event),
+            event_to_day_pct_str(event),
+            self.cleaner.format_event_text(event),
+        )
+
+    def edit_selected_node(self):
+        selected = self.selection()
+        if selected:
+            # Use a dialog because Entry widgets are not supported inside of a Treeview.
+            result = simpledialog.askstring(
+                "Edit event",
+                "Enter a new name for the event:",
+                # Use the event column as the initial value
+                initialvalue=self.item(selected[0], "values")[self.event_desc_index],
+                parent=self,
+            )
+            if result:
+                self.item(selected[0], values=(*self.item(selected[0], "values")[:-1], result))
+
+    def open_selected_node(self):
+        selected = self.selection()
+        if selected:
+            self.item(selected[0], open=True)
+
+    def close_selected_node(self):
+        selected = self.selection()
+        if selected:
+            is_open = self.item(selected[0], "open")
+            has_children = self.get_children(selected[0])
+            parent = self.parent(selected[0])
+            if is_open and has_children:
+                self.item(selected[0], open=False)
+            elif parent:
+                self.item(parent, open=False)
+                self.selection_set(self.parent(selected[0]))
+
     def remove_selected(self):
         selected = self.selection()
+        # Must select next before deleting...
+        self.leave_visual_mode()
+        self.select_next()  # TODO: Handle end of table case.
         if selected:
             for node in selected:
                 self.delete(node)
-        self.select_next()  # TODO: Handle end of table case.
 
     def set_previously_selected(self):
+        # TODO: Handle case where you are selecting from the top in visual mode and trying to go back up.
         current_selections = set(map(int, self.selection()))
         if new_selections := current_selections - self.old_selection:
             if self.old_selection and max(new_selections) == max(self.old_selection):
@@ -149,20 +219,14 @@ class ReviewTable(ttk.Treeview):
         start_time = now - dt.timedelta(days=1)
         self.events = self.cleaner.get_collapsed_events(start_time)
         for i, event in enumerate(self.events):
-            start = event.timestamp.astimezone(system_timezone)
-            end = start + event.duration
-            time_str = f"{start.strftime('%H:%M')} - {end.strftime('%H:%M')}"
             self.insert(
                 "",
                 tk.END,
                 id=i,
-                text="",
-                values=(
-                    time_str,
-                    str(int(event.duration.total_seconds() / 60)),
-                    self.cleaner.format_event_text(event),
-                ),
+                text=event_to_time_str(event),
+                values=self.event_to_values(event),
             )
+        self.selection_set(self.get_children()[0])
 
     def group(self):
         """Make the highlighted nodes a subtree of a new node."""
@@ -182,26 +246,21 @@ class ReviewTable(ttk.Treeview):
                 parent=self,
             )
 
-        # TODO: Add history/Ctrl + backspace/etc like the data entry for aw-watcher-awk-away.
-        result = simpledialog.askstring(
-            "Group events",
-            "Enter a name for the group:",
-            initialvalue=self.item(selected[0], "text"),
-            parent=self,
-        )
-        result = result.strip() if result else selected[0]
-
         # Get the first selected nodes' event.
         events = [self.events[int(node)] for node in selected]
-        start_time_str = events[0].timestamp.astimezone(system_timezone).strftime("%H:%M")
-        end_time_str = (events[-1].timestamp + events[-1].duration).astimezone(system_timezone).strftime("%H:%M")
-        time_str = f"{start_time_str} - {end_time_str}"
-        durration = int((events[-1].timestamp + events[-1].duration - events[0].timestamp).total_seconds() / 60)
+        pseudo_event = aw_core.Event(
+            timestamp=events[0].timestamp,
+            duration=events[-1].timestamp + events[-1].duration - events[0].timestamp,
+            data=events[0].data,
+        )
 
-        new_node = self.insert(parent, index, text=result, values=(time_str, durration, result))
+        new_node = self.insert(
+            parent, index, text=event_to_time_str(pseudo_event), values=self.event_to_values(pseudo_event)
+        )
 
         for node in selected:
             self.move(node, new_node, "end")
+        self.selection_set(new_node)
 
 
 # TODO: Add ability to rate activities.
@@ -214,6 +273,9 @@ class MainWindow(tk.Frame):
 
         self.root.title("ActivityWatch Daily Reviewer")
 
+        # self.root.bind("<Shift-r>", lambda _: self.update())
+        self.root.bind("<Control-r>", lambda _: self.update())
+
         self.create_widgets()
 
     def update(self):
@@ -221,7 +283,9 @@ class MainWindow(tk.Frame):
 
     def create_widgets(self):
         self.review_table = ReviewTable(self, self.cleaner)
-        self.review_table.grid()
+        self.review_table.grid(column=0, row=0, sticky="nsew")
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
 
         self.update_button = ttk.Button(self, text="Update", command=self.update)
         self.update_button.grid()

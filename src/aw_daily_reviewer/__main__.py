@@ -14,7 +14,8 @@ root = tk.Tk()
 def main():
     with ActivityWatchClient("aw-daily-reviewer") as client:
         cleaner = ActivityWatchCleaner(client)
-        MainWindow(root, cleaner).grid()
+        MainWindow(root, cleaner).grid(sticky="nsew")
+        root.rowconfigure(0, weight=1)
         root.mainloop()
 
 
