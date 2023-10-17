@@ -1,11 +1,15 @@
 """The tkinter GUI for the aw_daily_reviewer package."""
 import datetime as dt
+import json
 import logging
 import tkinter as tk
 from itertools import pairwise
+from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 
+import appdirs
 import aw_core
+from tkcalendar import DateEntry
 
 from aw_daily_reviewer.core import ActivityWatchCleaner
 
@@ -63,13 +67,17 @@ class ReviewTable(ttk.Treeview):
         self.visual_mode = False
         self.previously_selected = None
         self.old_selection = set()
+        self.date = None
         self.bind("<<TreeviewSelect>>", lambda _: self.set_previously_selected())
 
         # Add some vim-like keybindings
         self.bind("<Double-g>", lambda _: self.go_to_top())
         self.bind("<G>", lambda _: self.go_to_bottom())
+        # TODO: Add the ability to refold/delete folds/add to a fold.
         self.bind("h", lambda _: self.close_selected_node())
+        self.bind("zc", lambda _: self.close_selected_node())
         self.bind("l", lambda _: self.open_selected_node())
+        self.bind("zo", lambda _: self.open_selected_node())
         self.bind("i", lambda _: self.edit_selected_node())
         # TODO: Fix j and k to go into folds if they are open.
         self.bind("j", lambda _: self.select_next())
@@ -82,12 +90,54 @@ class ReviewTable(ttk.Treeview):
         self.bind("<Escape>", lambda _: self.leave_visual_mode())
         self.bind("zf", lambda _: self.group())
 
+        self.bind("<Control-s>", lambda _: self.to_json())
+        self.bind("<Control-Shift-R>", lambda _: self.load_json(self.to_json()))
+
     def event_to_values(self, event: aw_core.Event):
         return (
             event_to_minutes(event),
             event_to_day_pct_str(event),
             self.cleaner.format_event_text(event),
         )
+
+    def node_to_json(self, node: str):
+        return {
+            "event": self.events_by_node_id[node].to_json_dict() if node in self.events_by_node_id else None,
+            "node": self.item(node),
+            "children": [self.node_to_json(child) for child in self.get_children(node)],
+        }
+
+    def to_json(self):
+        """Create a JSON representation of the tree so we can save our work and come back later."""
+        logger.debug("Converting tree to JSON.")
+        nodes = [self.node_to_json(node) for node in self.get_children()]
+        return {
+            "nodes": nodes,
+            "date": dt.datetime.now(tz=system_timezone).date().isoformat(),
+        }
+
+    def load_json(self, json_data: dict):
+        """Load a JSON representation of the tree."""
+        logger.debug("Loading tree from JSON.")
+        self.delete(*self.get_children())
+        self.events_by_node_id: dict[str, aw_core.Event] = {}
+        for child in json_data["nodes"]:
+            self.load_json_node(child, "")
+
+    def load_json_node(self, json_data: dict, parent: str):
+        """Load a JSON representation of the tree."""
+        logger.debug(f"Loading node: {json_data}")
+
+        node = self.insert(
+            parent,
+            tk.END,
+            text=json_data["node"]["text"],
+            values=json_data["node"]["values"],
+        )
+        if json_data["event"]:
+            self.events_by_node_id[node] = aw_core.Event(**json_data["event"])
+        for child in json_data["children"]:
+            self.load_json_node(child, node)
 
     def edit_selected_node(self):
         selected = self.selection()
@@ -131,7 +181,7 @@ class ReviewTable(ttk.Treeview):
 
     def set_previously_selected(self):
         # TODO: Handle case where you are selecting from the top in visual mode and trying to go back up.
-        current_selections = set(map(int, self.selection()))
+        current_selections = set(self.selection())
         if new_selections := current_selections - self.old_selection:
             if self.old_selection and max(new_selections) == max(self.old_selection):
                 self.previously_selected = min(new_selections)
@@ -139,6 +189,7 @@ class ReviewTable(ttk.Treeview):
                 self.previously_selected = max(new_selections)
         elif removed_selections := self.old_selection - current_selections:
             if self.previously_selected in removed_selections:
+                # This assumes that the node ids are ordered as you insert new nodes.
                 if all(x < self.previously_selected for x in current_selections):
                     self.previously_selected = max(current_selections)
                 elif all(x > self.previously_selected for x in current_selections):
@@ -213,19 +264,29 @@ class ReviewTable(ttk.Treeview):
         self.yview_moveto(1)
         self.selection_set(self.get_children()[-1])
 
-    def update(self):
+    def update(self, date: dt.date | None = None):
         self.delete(*self.get_children())
-        now = dt.datetime.now(tz=system_timezone)
-        start_time = now - dt.timedelta(days=1)
-        self.events = self.cleaner.get_collapsed_events(start_time)
-        for i, event in enumerate(self.events):
-            self.insert(
+        self.date = date
+
+        if date is None:
+            now = dt.datetime.now(tz=system_timezone)
+            start_time = now - dt.timedelta(days=1)
+            end_time = None
+        else:
+            start_time = dt.datetime.combine(date, dt.time.min, tzinfo=system_timezone)
+            end_time = dt.datetime.combine(date, dt.time.max, tzinfo=system_timezone)
+
+        logger.debug(f"Getting events from {start_time} to {end_time}.")
+        self.events_by_node_id: dict[str, aw_core.Event] = {}
+        for event in self.cleaner.get_collapsed_events(start_time, end_time):
+            node_id = self.insert(
                 "",
                 tk.END,
-                id=i,
                 text=event_to_time_str(event),
                 values=self.event_to_values(event),
             )
+            self.events_by_node_id[node_id] = event
+
         self.selection_set(self.get_children()[0])
 
     def group(self):
@@ -247,7 +308,9 @@ class ReviewTable(ttk.Treeview):
             )
 
         # Get the first selected nodes' event.
-        events = [self.events[int(node)] for node in selected]
+        logger.debug(f"Selected: {selected}")
+        logger.debug(self.events_by_node_id)
+        events = [self.events_by_node_id[node] for node in selected]
         pseudo_event = aw_core.Event(
             timestamp=events[0].timestamp,
             duration=events[-1].timestamp + events[-1].duration - events[0].timestamp,
@@ -279,7 +342,8 @@ class MainWindow(tk.Frame):
         self.create_widgets()
 
     def update(self):
-        self.review_table.update()
+        date = self.date_picker.get_date()
+        self.review_table.update(date)
 
     def create_widgets(self):
         self.review_table = ReviewTable(self, self.cleaner)
@@ -288,4 +352,49 @@ class MainWindow(tk.Frame):
         self.grid_rowconfigure(0, weight=1)
 
         self.update_button = ttk.Button(self, text="Update", command=self.update)
-        self.update_button.grid()
+        self.update_button.grid(column=1, row=0, sticky="nw")
+
+        # Add a date picker
+        self.date_picker = DateEntry(self, width=12, background="darkblue", foreground="white", borderwidth=2)
+        self.date_picker.grid(column=2, row=0, sticky="nw")
+
+        self.save_button = ttk.Button(self, text="Save", command=self.save)
+        self.save_button.grid(column=1, row=0, sticky="sw")
+
+        self.open_box = ttk.Combobox(self, values=self.get_saved_dates(), state="readonly")
+        self.open_box.grid(column=2, row=0, sticky="sw")
+        self.open_button = ttk.Button(self, text="Open", command=self.open)
+        self.open_button.grid(column=3, row=0, sticky="sw")
+
+    def get_days_dir(self):
+        appdata_dir = Path(appdirs.user_data_dir("aw-daily-reviewer"))
+        if not appdata_dir.exists():
+            appdata_dir.mkdir(parents=True)
+        days_dir = appdata_dir / "days"
+        if not days_dir.exists():
+            days_dir.mkdir()
+        return days_dir
+
+    def get_saved_dates(self):
+        return [x.stem for x in self.get_days_dir().glob("*.json")]
+
+    def open(self):
+        """Open a saved review."""
+        date = self.open_box.get()
+        if date:
+            file = self.get_days_dir() / f"{date}.json"
+            logger.debug(f"Opening {file}")
+            with file.open() as f:
+                table_json = json.load(f)
+            self.review_table.load_json(table_json)
+            self.review_table.date = dt.datetime.fromisoformat(table_json["date"]).date()
+
+    def save(self):
+        """Save the current state of the tree."""
+        table_json = self.review_table.to_json()
+
+        assert self.review_table.date is not None
+        file = self.get_days_dir() / f"{self.review_table.date.isoformat()}.json"
+        logger.debug(f"Saving to {file}")
+        with file.open("w") as f:
+            json.dump(table_json, f, indent=4)

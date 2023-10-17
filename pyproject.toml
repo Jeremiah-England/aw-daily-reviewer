@@ -16,7 +16,12 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: Implementation :: CPython",
 ]
-dependencies = ["aw-client>=0.5.12", "aw-core>=0.5.15"]
+dependencies = [
+  "aw-client>=0.5.12",
+  "aw-core>=0.5.15",
+  "tkcalendar>=1.6.1",
+  "appdirs>=1.4.4",
+]
 
 [project.urls]
 Documentation = "https://github.com/Jeremiah-England/aw-daily-reviewer#readme"
