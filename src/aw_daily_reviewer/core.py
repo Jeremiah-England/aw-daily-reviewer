@@ -14,6 +14,8 @@ class AWDailyReviewerError(Exception):
     """Errors in the ActivityWatch daily reviewer application."""
 
 
+# TODO: When the browser is the active application, fall back on the browser watcher if it exists.
+# TODO: Figure out why this produces overlapping events sometimes.
 class ActivityWatchCleaner:
     """Retrive and clean activity watch data."""
 

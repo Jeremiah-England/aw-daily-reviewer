@@ -204,6 +204,7 @@ class ReviewTable(ttk.Treeview):
         self.visual_mode = True
 
     def leave_visual_mode(self):
+        # TODO: When leaving visual mode, remove all the selection except for the previously_selected.
         self.visual_mode = False
 
     def center_selected(self):
@@ -363,7 +364,7 @@ class MainWindow(tk.Frame):
 
         self.open_box = ttk.Combobox(self, values=self.get_saved_dates(), state="readonly")
         self.open_box.grid(column=2, row=0, sticky="sw")
-        self.open_button = ttk.Button(self, text="Open", command=self.open)
+        self.open_button = ttk.Button(self, text="Open", command=self.open_day)
         self.open_button.grid(column=3, row=0, sticky="sw")
 
     def get_days_dir(self):
@@ -378,7 +379,7 @@ class MainWindow(tk.Frame):
     def get_saved_dates(self):
         return [x.stem for x in self.get_days_dir().glob("*.json")]
 
-    def open(self):
+    def open_day(self):
         """Open a saved review."""
         date = self.open_box.get()
         if date:
