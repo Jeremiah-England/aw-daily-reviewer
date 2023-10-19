@@ -6,6 +6,7 @@ import tkinter as tk
 from itertools import pairwise
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
+from typing import Any
 
 import appdirs
 import aw_core
@@ -39,6 +40,47 @@ def event_to_time_str(event: aw_core.Event) -> str:
     start = event.timestamp.astimezone(system_timezone)
     end = start + event.duration
     return f"{start.strftime('%H:%M')} - {end.strftime('%H:%M')}"
+
+
+# TODO: This seems bad. Figure out a better way to do this.
+class Config:
+    """A configuration object that auto saves when you edit it.
+
+    A singleton class that stores the configuration for the program.
+    """
+
+    def __init__(self):
+        self.file = Path(appdirs.user_config_dir("aw-daily-reviewer")) / "config.json"
+        if not self.file.exists():
+            self.file.parent.mkdir(parents=True, exist_ok=True)
+            self._data = {}
+            self.save()
+        else:
+            with self.file.open() as f:
+                self._data = json.load(f)
+
+    def save(self):
+        """Save the configuration to disk."""
+        with self.file.open("w") as f:
+            json.dump(self._data, f, indent=4)
+
+    def _set(self, key: str, value: Any):
+        self._data[key] = value
+        self.save()
+
+    def _get(self, key: str, default: Any):
+        return self._data.get(key, default)
+
+    @property
+    def hour_buffer(self):
+        return self._get("hour_buffer", 5)
+
+    @hour_buffer.setter
+    def hour_buffer(self, value):
+        self._set("hour_buffer", value)
+
+
+config = Config()
 
 
 class ReviewTable(ttk.Treeview):
@@ -274,8 +316,9 @@ class ReviewTable(ttk.Treeview):
             start_time = now - dt.timedelta(days=1)
             end_time = None
         else:
-            start_time = dt.datetime.combine(date, dt.time.min, tzinfo=system_timezone)
-            end_time = dt.datetime.combine(date, dt.time.max, tzinfo=system_timezone)
+            buffer = dt.timedelta(hours=config.hour_buffer)
+            start_time = dt.datetime.combine(date, dt.time.min, tzinfo=system_timezone) - buffer
+            end_time = dt.datetime.combine(date, dt.time.max, tzinfo=system_timezone) + buffer
 
         logger.debug(f"Getting events from {start_time} to {end_time}.")
         self.events_by_node_id: dict[str, aw_core.Event] = {}
@@ -327,6 +370,12 @@ class ReviewTable(ttk.Treeview):
         self.selection_set(new_node)
 
 
+# TODO: Color the rows according to the time, but add a toggle to turn it off.
+# TODO: Fix window resize issues.
+# TODO: Allow for viewing high res when grouping but once you have grouped allow to drop stuff below a certain threshold.  # noqa: E501
+# TODO: Give the user some indication of whether things have been saved.
+# TODO: Add the ability for someone to set the time where their day resets (e.g. 4:00am instead of 12:00am).
+# TODO: Add undo functionality for deleting.
 # TODO: Add ability to rate activities.
 # TODO: Add saving the group data so we can train something to automatically group events.
 class MainWindow(tk.Frame):
