@@ -394,6 +394,7 @@ class MainWindow(tk.Frame):
     def update(self):
         date = self.date_picker.get_date()
         self.review_table.update(date)
+        self.review_table.focus_set()
 
     def create_widgets(self):
         self.review_table = ReviewTable(self, self.cleaner)
